@@ -3,7 +3,9 @@ package gelf
 import (
 	"encoding/json"
 	"errors"
+	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -15,8 +17,23 @@ import (
 var hostname string
 
 func init() {
-	hostname, _ = os.Hostname()
+	hostname, _ = hostnameFromRancherMetadata()
 	router.AdapterFactories.Register(NewGelfAdapter, "gelf")
+}
+
+func hostnameFromRancherMetadata() (hostname string, err error) {
+	res, err := http.Get("http://rancher-metadata.rancher.internal/latest/self/host/name")
+	if err == nil {
+		resBytes, err := ioutil.ReadAll(res.Body)
+		if err != nil {
+			hostname = string(resBytes)
+		}
+	}
+
+	if len(hostname) == 0 {
+		hostname, err = os.Hostname()
+	}
+	return
 }
 
 // GelfAdapter is an adapter that streams UDP JSON to Graylog
@@ -65,10 +82,6 @@ func (a *GelfAdapter) Stream(logstream chan *router.Message) {
 			Level:    level,
 			RawExtra: extra,
 		}
-		// 	ContainerId:    m.Container.ID,
-		// 	ContainerImage: m.Container.Config.Image,
-		// 	ContainerName:  m.Container.Name,
-		// }
 
 		// here be message write.
 		if err := a.writer.WriteMessage(&msg); err != nil {
@@ -83,15 +96,25 @@ type GelfMessage struct {
 }
 
 func (m GelfMessage) getExtraFields() (json.RawMessage, error) {
+	var containerInstance = m.Container.Config.Labels["io.rancher.container.name"]
 
 	extra := map[string]interface{}{
-		"_container_id":   m.Container.ID,
-		"_container_name": m.Container.Name[1:], // might be better to use strings.TrimLeft() to remove the first /
-		"_image_id":       m.Container.Image,
-		"_image_name":     m.Container.Config.Image,
-		"_command":        strings.Join(m.Container.Config.Cmd[:], " "),
-		"_created":        m.Container.Created,
+		"_container_id":               m.Container.ID,
+		"_container_name":             m.Container.Name[1:], // might be better to use strings.TrimLeft() to remove the first /
+		"_image_id":                   m.Container.Image,
+		"_image_name":                 m.Container.Config.Image,
+		"_command":                    strings.Join(m.Container.Config.Cmd[:], " "),
+		"_created":                    m.Container.Created,
+		"_logspout_source":            m.Source,
+		"_rancher_stack_service":      m.Container.Config.Labels["io.rancher.stack_service.name"],
+		"_rancher_container_instance": containerInstance,
+		"_rancher_host":               hostname,
 	}
+
+	if len(containerInstance) > 0 {
+		m.Source = containerInstance
+	}
+
 	for name, label := range m.Container.Config.Labels {
 		if len(name) > 5 && strings.ToLower(name[0:5]) == "gelf_" {
 			extra[name[4:]] = label
