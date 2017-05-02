@@ -64,6 +64,12 @@ func NewGelfAdapter(route *router.Route) (router.LogAdapter, error) {
 func (a *GelfAdapter) Stream(logstream chan *router.Message) {
 	for message := range logstream {
 		m := &GelfMessage{message}
+
+		if strings.HasPrefix(m.Container.Config.Image, "rancher") {
+			// Temporary hack to get around Rancher system label bug
+			continue
+		}
+
 		level := gelf.LOG_INFO
 		if m.Source == "stderr" {
 			level = gelf.LOG_ERR
@@ -110,8 +116,9 @@ func (m GelfMessage) getExtraFields() (json.RawMessage, error) {
 		"_command":               strings.Join(m.Container.Config.Cmd[:], " "),
 		"_created":               m.Container.Created,
 		"_rancher_stack_service": m.Container.Config.Labels["io.rancher.stack_service.name"],
-		"_logspout_instance":     logspoutInstance,
 		"_rancher_host":          hostname,
+		"_logspout_instance":     logspoutInstance,
+		"_logspout_source":       m.Source,
 	}
 	for name, label := range m.Container.Config.Labels {
 		if len(name) > 5 && strings.ToLower(name[0:5]) == "gelf_" {
